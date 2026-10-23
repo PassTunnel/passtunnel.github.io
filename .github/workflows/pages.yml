@@ -1,0 +1,79 @@
+# Deploys the root of https://passtunnel.github.io/: index.html (a redirect to the website at
+# /passtunnel/, which PassTunnel/passtunnel deploys on its own), 404.html, robots.txt and llms.txt.
+# llms.txt is not kept in this repository: it is fetched from site/llms.txt on main of
+# PassTunnel/passtunnel at every run, and the daily schedule picks up its changes. The build job has
+# read-only access; only the deploy job may write to Pages.
+#
+# Repository settings: Pages → Source → GitHub Actions, and the environment "github-pages" must allow
+# deployments from main.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '23 5 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  LLMS_TXT_URL: https://raw.githubusercontent.com/PassTunnel/passtunnel/main/site/llms.txt
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          mkdir _site
+          cp index.html 404.html robots.txt _site/
+          curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+            --proto '=https' --tlsv1.2 --output _site/llms.txt "$LLMS_TXT_URL"
+          if [[ ! -s _site/llms.txt ]]; then
+            echo "::error::llms.txt is empty: $LLMS_TXT_URL"
+            exit 1
+          fi
+          if [[ "$(head -c 12 _site/llms.txt)" != "# PassTunnel" ]]; then
+            echo "::error::llms.txt does not start with \"# PassTunnel\": $LLMS_TXT_URL"
+            exit 1
+          fi
+          ls -l _site
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write          # publish the artifact to Pages
+      id-token: write       # prove the deployment's origin to Pages
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
