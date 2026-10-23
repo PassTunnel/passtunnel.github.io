@@ -1,19 +1,24 @@
-# Deploys the root of https://passtunnel.github.io/: index.html (a redirect to the website at
-# /passtunnel/, which PassTunnel/passtunnel deploys on its own), 404.html, robots.txt and llms.txt.
-# llms.txt is not kept in this repository: it is fetched from site/llms.txt on main of
-# PassTunnel/passtunnel at every run, and the daily schedule picks up its changes. The build job has
-# read-only access; only the deploy job may write to Pages.
+# Deploys https://passtunnel.github.io/: the PassTunnel website from site/ of PassTunnel/passtunnel,
+# together with the few files of this repository. Runs on every push to main and by hand
+# (Actions → Pages → Run workflow, on main).
+#
+# site.ref holds the commit of PassTunnel/passtunnel whose site/ is published (one full SHA). The
+# site.yml workflow of that repository writes it after every push to its main that touches site/; to
+# publish another commit by hand, change site.ref here. The build job checks out site/ and
+# scripts/check-site.sh at that commit (sparse, read-only), runs the checks, and assembles _site from
+# site/ plus this repository's extras: the Search Console verification file (google*.html) and
+# passtunnel/, a redirect from the old address /passtunnel/ to / that keeps the #section. An extra
+# never replaces a file of site/; the build fails instead. Only the deploy job may write to Pages.
 #
 # Repository settings: Pages → Source → GitHub Actions, and the environment "github-pages" must allow
-# deployments from main.
+# deployments from main. PassTunnel/passtunnel pushes site.ref with a write deploy key of this
+# repository (its secret SITE_DEPLOY_KEY).
 name: Pages
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
-  schedule:
-    - cron: '23 5 * * *'
 
 permissions:
   contents: read
@@ -26,9 +31,6 @@ defaults:
   run:
     shell: bash
 
-env:
-  LLMS_TXT_URL: https://raw.githubusercontent.com/PassTunnel/passtunnel/main/site/llms.txt
-
 jobs:
   build:
     name: Build
@@ -39,22 +41,47 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Read site.ref
+        id: ref
+        run: |
+          [[ -f site.ref ]] || { echo "::error::site.ref is missing"; exit 1; }
+          sha="$(<site.ref)"
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::site.ref must hold one full commit SHA of PassTunnel/passtunnel"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Site::PassTunnel/passtunnel@${sha::12}"
+
+      # Non-cone mode, so the patterns may name a single file and the app repository's root files
+      # stay out.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: PassTunnel/passtunnel
+          ref: ${{ steps.ref.outputs.sha }}
+          path: app
+          persist-credentials: false
+          sparse-checkout: |
+            /site/
+            /scripts/check-site.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Check the site
+        run: app/scripts/check-site.sh app/site
+
       - name: Assemble the site
         run: |
-          set -euo pipefail
+          shopt -s failglob
           mkdir _site
-          cp index.html 404.html robots.txt google*.html _site/
-          curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
-            --proto '=https' --tlsv1.2 --output _site/llms.txt "$LLMS_TXT_URL"
-          if [[ ! -s _site/llms.txt ]]; then
-            echo "::error::llms.txt is empty: $LLMS_TXT_URL"
-            exit 1
-          fi
-          if [[ "$(head -c 12 _site/llms.txt)" != "# PassTunnel" ]]; then
-            echo "::error::llms.txt does not start with \"# PassTunnel\": $LLMS_TXT_URL"
-            exit 1
-          fi
-          ls -l _site
+          cp -R app/site/. _site/
+          for extra in google*.html passtunnel; do
+            if [[ -e "_site/$extra" ]]; then
+              echo "::error::$extra would replace site/$extra of PassTunnel/passtunnel"
+              exit 1
+            fi
+            cp -R "$extra" _site/
+          done
+          find _site -type f | sort
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
