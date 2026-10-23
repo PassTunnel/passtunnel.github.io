@@ -43,7 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir _site
-          cp index.html 404.html robots.txt _site/
+          cp index.html 404.html robots.txt google*.html _site/
           curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
             --proto '=https' --tlsv1.2 --output _site/llms.txt "$LLMS_TXT_URL"
           if [[ ! -s _site/llms.txt ]]; then
